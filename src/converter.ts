@@ -13,7 +13,8 @@ export function convertTsToScala(input: string, packageName: string): string {
   // Create code writer
   const writer = new CodeBlockWriter({
     indentNumberOfSpaces: 2,
-    newLine: '\n'
+    newLine: '\n',
+    useTabs: false
   })
 
   // Generate Scala output
@@ -124,10 +125,14 @@ function processModuleDeclaration(node: ts.ModuleDeclaration, writer: CodeBlockW
   const moduleName = node.name.getText()
   const newNamespace = namespace ? `${namespace}.${moduleName}` : moduleName
   
+  // Handle reserved words for module names
+  const reservedWords = ['abstract', 'case', 'catch', 'class', 'def', 'do', 'else', 'extends', 'false', 'final', 'finally', 'for', 'forSome', 'if', 'implicit', 'import', 'lazy', 'macro', 'match', 'new', 'null', 'object', 'override', 'package', 'private', 'protected', 'return', 'sealed', 'super', 'then', 'this', 'throw', 'trait', 'try', 'true', 'type', 'val', 'var', 'while', 'with', 'yield']
+  const safeModuleName = reservedWords.includes(moduleName) ? `\`${moduleName}\`` : moduleName
+  
   writer.newLine()
   const currentIndentLevel = writer.getIndentationLevel()
   writer.setIndentationLevel(0)
-  writer.write(`package ${moduleName} `).block(() => {
+  writer.write(`package ${safeModuleName} `).block(() => {
     
     if (node.body && ts.isModuleBlock(node.body)) {
       // Collect exports for module object
@@ -139,14 +144,14 @@ function processModuleDeclaration(node: ts.ModuleDeclaration, writer: CodeBlockW
       
       // Process declarations and collect exports
       node.body.statements.forEach(statement => {
-        if (hasExportModifier(statement)) {
-          if (ts.isInterfaceDeclaration(statement)) {
-            exports.interfaces.push(statement)
-          } else if (ts.isTypeAliasDeclaration(statement)) {
-            exports.types.push(statement)
-          } else if (ts.isFunctionDeclaration(statement)) {
-            exports.functions.push(statement)
-          }
+        // In declare module blocks, all top-level declarations are implicitly exported
+        // So we collect all functions, types, etc., not just ones with explicit export modifier
+        if (ts.isInterfaceDeclaration(statement)) {
+          exports.interfaces.push(statement)
+        } else if (ts.isTypeAliasDeclaration(statement)) {
+          exports.types.push(statement)
+        } else if (ts.isFunctionDeclaration(statement)) {
+          exports.functions.push(statement)
         }
         processStatement(statement, writer, newNamespace)
       })
@@ -169,6 +174,19 @@ function processClassDeclaration(node: ts.ClassDeclaration, writer: CodeBlockWri
   const isAbstract = node.modifiers?.some(mod => mod.kind === ts.SyntaxKind.AbstractKeyword)
   const isExport = hasExportModifier(node)
   
+  // Handle reserved words for class names
+  const reservedWords = ['abstract', 'case', 'catch', 'class', 'def', 'do', 'else', 'extends', 'false', 'final', 'finally', 'for', 'forSome', 'if', 'implicit', 'import', 'lazy', 'macro', 'match', 'new', 'null', 'object', 'override', 'package', 'private', 'protected', 'return', 'sealed', 'super', 'then', 'this', 'throw', 'trait', 'try', 'true', 'type', 'val', 'var', 'while', 'with', 'yield']
+  const safeClassName = reservedWords.includes(className) ? `\`${className}\`` : className
+  
+  // Handle type parameters
+  const typeParams = node.typeParameters?.map(tp => {
+    const paramName = tp.name.getText()
+    const constraint = tp.constraint ? ` <: ${convertTypeToScala(tp.constraint)}` : ''
+    return `${paramName}${constraint}`
+  }) || []
+  
+  const typeParamString = typeParams.length > 0 ? `[${typeParams.join(', ')}]` : ''
+  
   // For exported classes in modules
   if (isExport) {
     writer.newLine()
@@ -182,7 +200,7 @@ function processClassDeclaration(node: ts.ClassDeclaration, writer: CodeBlockWri
       writer.write('@JSGlobal').newLine()
     }
     
-    writer.write(`${isAbstract ? 'abstract ' : ''}class ${className} extends js.Object `).block(() => {
+    writer.write(`${isAbstract ? 'abstract ' : ''}class ${safeClassName}${typeParamString} extends js.Object `).block(() => {
       node.members.forEach(member => {
         processClassMember(member, writer, isAbstract)
       })
@@ -197,8 +215,9 @@ function processClassDeclaration(node: ts.ClassDeclaration, writer: CodeBlockWri
   const currentIndentLevel = writer.getIndentationLevel()
   writer.setIndentationLevel(0)
   writer.write('@js.native').newLine()
-  writer.write('@JSGlobal').newLine()
-  writer.write(`${isAbstract ? 'abstract ' : ''}class ${className} extends js.Object `).block(() => {
+  // Only add @JSGlobal for top-level non-exported classes when they have specific behavior
+  // For now, don't add @JSGlobal for top-level classes
+  writer.write(`${isAbstract ? 'abstract ' : ''}class ${safeClassName}${typeParamString} extends js.Object `).block(() => {
     node.members.forEach(member => {
       processClassMember(member, writer, isAbstract)
     })
@@ -211,13 +230,22 @@ function processInterfaceDeclaration(node: ts.InterfaceDeclaration, writer: Code
   const interfaceName = node.name.getText()
   const isExport = hasExportModifier(node)
   
+  // Handle type parameters
+  const typeParams = node.typeParameters?.map(tp => {
+    const paramName = tp.name.getText()
+    const constraint = tp.constraint ? ` <: ${convertTypeToScala(tp.constraint)}` : ''
+    return `${paramName}${constraint}`
+  }) || []
+  
+  const typeParamString = typeParams.length > 0 ? `[${typeParams.join(', ')}]` : ''
+  
   // For exported interfaces in modules, no @JSGlobal annotation
   if (isExport) {
     writer.newLine()
     const currentIndentLevel = writer.getIndentationLevel()
     writer.setIndentationLevel(0)
     writer.write('@js.native').newLine()
-    writer.write(`trait ${interfaceName} extends js.Object `).block(() => {
+    writer.write(`trait ${interfaceName}${typeParamString} extends js.Object `).block(() => {
       processInterfaceMembersWithDeduplication(node.members, writer)
     })
     writer.newLine()
@@ -225,12 +253,13 @@ function processInterfaceDeclaration(node: ts.InterfaceDeclaration, writer: Code
     return
   }
   
+  // Non-exported interfaces at top level should not have @JSGlobal
   writer.newLine()
   const currentIndentLevel = writer.getIndentationLevel()
   writer.setIndentationLevel(0)
   writer.write('@js.native').newLine()
-  writer.write('@JSGlobal').newLine()
-  writer.write(`trait ${interfaceName} extends js.Object `).block(() => {
+  // Don't add @JSGlobal for top-level interfaces
+  writer.write(`trait ${interfaceName}${typeParamString} extends js.Object `).block(() => {
     processInterfaceMembersWithDeduplication(node.members, writer)
   })
   writer.newLine()
@@ -256,6 +285,9 @@ function processInterfaceMember(member: ts.TypeElement, writer: CodeBlockWriter)
     case ts.SyntaxKind.MethodSignature:
       processMethodSignature(member as ts.MethodSignature, writer)
       break
+    case ts.SyntaxKind.IndexSignature:
+      processIndexSignature(member as ts.IndexSignatureDeclaration, writer)
+      break
   }
 }
 
@@ -276,29 +308,93 @@ function processPropertySignature(node: ts.PropertySignature, writer: CodeBlockW
 
 function processMethodDeclaration(node: ts.MethodDeclaration, writer: CodeBlockWriter, isAbstractClass?: boolean): void {
   const name = node.name.getText()
+  
+  // Handle reserved words
+  const reservedWords = ['abstract', 'case', 'catch', 'class', 'def', 'do', 'else', 'extends', 'false', 'final', 'finally', 'for', 'forSome', 'if', 'implicit', 'import', 'lazy', 'macro', 'match', 'new', 'null', 'object', 'override', 'package', 'private', 'protected', 'return', 'sealed', 'super', 'then', 'this', 'throw', 'trait', 'try', 'true', 'type', 'val', 'var', 'while', 'with', 'yield']
+  const safeName = reservedWords.includes(name) ? `\`${name}\`` : name
+  
+  // Handle method type parameters
+  const typeParams = node.typeParameters?.map(tp => {
+    const paramName = tp.name.getText()
+    const constraint = tp.constraint ? ` <: ${convertTypeToScala(tp.constraint)}` : ''
+    return `${paramName}${constraint}`
+  }) || []
+  
+  const typeParamString = typeParams.length > 0 ? `[${typeParams.join(', ')}]` : ''
+  
   const params = node.parameters.map(p => {
     const paramName = p.name.getText()
-    const paramType = p.type ? convertTypeToScala(p.type) : 'js.Any'
-    return `${paramName}: ${paramType}`
+    let paramType = p.type ? convertTypeToScala(p.type) : 'js.Any'
+    
+    // Handle rest parameters
+    if (p.dotDotDotToken) {
+      paramType = paramType.replace(/^js\.Array\[(.+)\]$/, '$1')
+      return `${paramName}: ${paramType}*`
+    }
+    
+    // Handle optional parameters
+    const optional = p.questionToken ? ' = ???' : ''
+    return `${paramName}: ${paramType}${optional}`
   }).join(', ')
   
   const returnType = node.type ? convertTypeToScala(node.type) : 'Unit'
   
   // Abstract class methods don't have implementations
   const implementation = isAbstractClass ? '' : ' = js.native'
-  writer.writeLine(`def ${name}(${params}): ${returnType}${implementation}`)
+  writer.writeLine(`def ${safeName}${typeParamString}(${params}): ${returnType}${implementation}`)
 }
 
 function processMethodSignature(node: ts.MethodSignature, writer: CodeBlockWriter): void {
   const name = node.name.getText()
+  
+  // Handle reserved words
+  const reservedWords = ['abstract', 'case', 'catch', 'class', 'def', 'do', 'else', 'extends', 'false', 'final', 'finally', 'for', 'forSome', 'if', 'implicit', 'import', 'lazy', 'macro', 'match', 'new', 'null', 'object', 'override', 'package', 'private', 'protected', 'return', 'sealed', 'super', 'then', 'this', 'throw', 'trait', 'try', 'true', 'type', 'val', 'var', 'while', 'with', 'yield']
+  const safeName = reservedWords.includes(name) ? `\`${name}\`` : name
+  
+  // Handle method type parameters
+  const typeParams = node.typeParameters?.map(tp => {
+    const paramName = tp.name.getText()
+    const constraint = tp.constraint ? ` <: ${convertTypeToScala(tp.constraint)}` : ''
+    return `${paramName}${constraint}`
+  }) || []
+  
+  const typeParamString = typeParams.length > 0 ? `[${typeParams.join(', ')}]` : ''
+  
   const params = node.parameters.map(p => {
     const paramName = p.name.getText()
-    const paramType = p.type ? convertTypeToScala(p.type) : 'js.Any'
-    return `${paramName}: ${paramType}`
+    let paramType = p.type ? convertTypeToScala(p.type) : 'js.Any'
+    
+    // Handle rest parameters
+    if (p.dotDotDotToken) {
+      paramType = paramType.replace(/^js\.Array\[(.+)\]$/, '$1')
+      return `${paramName}: ${paramType}*`
+    }
+    
+    // Handle optional parameters
+    const optional = p.questionToken ? ' = ???' : ''
+    return `${paramName}: ${paramType}${optional}`
   }).join(', ')
   
   const returnType = node.type ? convertTypeToScala(node.type) : 'Unit'
-  writer.writeLine(`def ${name}(${params}): ${returnType} = js.native`)
+  writer.writeLine(`def ${safeName}${typeParamString}(${params}): ${returnType} = js.native`)
+}
+
+function processIndexSignature(node: ts.IndexSignatureDeclaration, writer: CodeBlockWriter): void {
+  const parameter = node.parameters[0]
+  const indexType = parameter.type ? convertTypeToScala(parameter.type) : 'js.Any'
+  const returnType = node.type ? convertTypeToScala(node.type) : 'js.Any'
+  const paramName = parameter.name.getText()
+  
+  // Generate apply method for reading
+  writer.writeLine('@JSBracketAccess')
+  writer.writeLine(`def apply(${paramName}: ${indexType}): ${returnType} = js.native`)
+  
+  // Generate update method for writing (only if not readonly)
+  const isReadonly = node.modifiers?.some(mod => mod.kind === ts.SyntaxKind.ReadonlyKeyword)
+  if (!isReadonly) {
+    writer.writeLine('@JSBracketAccess')
+    writer.writeLine(`def update(${paramName}: ${indexType}, v: ${returnType}): Unit = js.native`)
+  }
 }
 
 function processEnumDeclaration(node: ts.EnumDeclaration, writer: CodeBlockWriter, namespace: string): void {
@@ -347,15 +443,56 @@ function processTypeAliasDeclaration(node: ts.TypeAliasDeclaration, writer: Code
   const typeName = node.name.getText()
   const typeValue = convertTypeToScala(node.type)
   
+  // Handle type parameters
+  const typeParams = node.typeParameters?.map(tp => {
+    const paramName = tp.name.getText()
+    const constraint = tp.constraint ? ` <: ${convertTypeToScala(tp.constraint)}` : ''
+    return `${paramName}${constraint}`
+  }) || []
+  
+  const typeParamString = typeParams.length > 0 ? `[${typeParams.join(', ')}]` : ''
+  
   writer.newLine()
   const currentIndentLevel = writer.getIndentationLevel()
   writer.setIndentationLevel(0)
-  writer.write(`type ${typeName} = ${typeValue}`).newLine()
+  writer.write(`type ${typeName}${typeParamString} = ${typeValue}`).newLine()
   writer.setIndentationLevel(currentIndentLevel)
 }
 
 function processVariableStatement(node: ts.VariableStatement, writer: CodeBlockWriter, namespace: string): void {
-  // TODO: Implement variable statement processing
+  node.declarationList.declarations.forEach(decl => {
+    const varName = decl.name.getText()
+    
+    if (decl.type && ts.isTypeLiteralNode(decl.type)) {
+      // Convert object literal type to Scala object
+      writer.newLine()
+      const currentIndentLevel = writer.getIndentationLevel()
+      writer.setIndentationLevel(0)
+      writer.write('@js.native').newLine()
+      writer.write('@JSGlobal').newLine()
+      writer.write(`object ${varName} extends js.Object `).block(() => {
+        decl.type!.members.forEach(member => {
+          if (ts.isPropertySignature(member)) {
+            const memberName = member.name?.getText() || 'unknown'
+            const memberType = member.type ? convertTypeToScala(member.type) : 'js.Any'
+            
+            // Handle numeric keys by wrapping in backticks
+            const safeMemberName = /^[0-9]/.test(memberName) || memberName.includes('.') 
+              ? `\`${memberName}\`` 
+              : memberName
+            
+            writer.writeLine(`var ${safeMemberName}: ${memberType} = js.native`)
+          }
+        })
+      })
+      writer.newLine()
+      writer.setIndentationLevel(currentIndentLevel)
+    } else {
+      // Handle other variable types
+      const varType = decl.type ? convertTypeToScala(decl.type) : 'js.Any'
+      // Variables go into global scope object - we'll collect them for later processing
+    }
+  })
 }
 
 function processFunctionDeclaration(node: ts.FunctionDeclaration, writer: CodeBlockWriter, namespace: string): void {
@@ -380,6 +517,9 @@ function convertTypeToScala(typeNode: ts.TypeNode): string {
       return 'js.Any'
     case ts.SyntaxKind.NeverKeyword:
       return 'Nothing'
+    case ts.SyntaxKind.ThisKeyword:
+    case ts.SyntaxKind.ThisType:
+      return 'this.type'
     case ts.SyntaxKind.TypeReference:
       return convertTypeReference(typeNode as ts.TypeReferenceNode)
     case ts.SyntaxKind.LiteralType:
@@ -396,6 +536,8 @@ function convertTypeToScala(typeNode: ts.TypeNode): string {
       return convertUnionType(typeNode as ts.UnionTypeNode)
     case ts.SyntaxKind.IntersectionType:
       return convertIntersectionType(typeNode as ts.IntersectionTypeNode)
+    case ts.SyntaxKind.TypeOperator:
+      return convertTypeOperator(typeNode as ts.TypeOperatorNode)
     default:
       return 'js.Any'
   }
@@ -421,15 +563,25 @@ function convertTypeReference(node: ts.TypeReferenceNode): string {
   const typeName = node.typeName.getText()
   const typeArgs = node.typeArguments?.map(arg => convertTypeToScala(arg)) || []
   
-  // Handle special Array type conversion
+  // Handle special type mappings
   if (typeName === 'Array' && typeArgs.length > 0) {
     return `js.Array[${typeArgs.join(', ')}]`
   }
   
-  if (typeArgs.length > 0) {
-    return `${typeName}[${typeArgs.join(', ')}]`
+  // Map common TypeScript types to Scala.js equivalents
+  switch (typeName) {
+    case 'Number':
+      return 'Double'
+    case 'null':
+      return 'Null'
+    case 'undefined':
+      return 'Unit'
+    default:
+      if (typeArgs.length > 0) {
+        return `${typeName}[${typeArgs.join(', ')}]`
+      }
+      return typeName
   }
-  return typeName
 }
 
 function convertFunctionType(node: ts.FunctionTypeNode): string {
@@ -497,6 +649,16 @@ function convertUnionType(node: ts.UnionTypeNode): string {
   // Remove duplicates and join with |
   const uniqueTypes = [...new Set(types)]
   
+  // Handle common nullable patterns: T | Null | Unit becomes T | js.Any
+  if (uniqueTypes.includes('Null') && uniqueTypes.includes('Unit')) {
+    const otherTypes = uniqueTypes.filter(t => t !== 'Null' && t !== 'Unit')
+    if (otherTypes.length === 1) {
+      return `${otherTypes[0]} | js.Any`
+    } else if (otherTypes.length > 1) {
+      return `${otherTypes.join(' | ')} | js.Any`
+    }
+  }
+  
   // If we have multiple string literals plus other types, simplify string literals to String
   const hasStringLiterals = node.types.some(t => 
     ts.isLiteralTypeNode(t) && ts.isStringLiteral(t.literal)
@@ -522,6 +684,14 @@ function convertIntersectionType(node: ts.IntersectionTypeNode): string {
   return types.join(' with ')
 }
 
+function convertTypeOperator(node: ts.TypeOperatorNode): string {
+  if (node.operator === ts.SyntaxKind.KeyOfKeyword) {
+    // keyof T becomes String in most cases, as we can't replicate exact keyof semantics
+    return 'String'
+  }
+  return 'js.Any'
+}
+
 function hasExportModifier(node: ts.Node): boolean {
   return node.modifiers?.some(mod => mod.kind === ts.SyntaxKind.ExportKeyword) ?? false
 }
@@ -543,14 +713,24 @@ function generateModuleObject(moduleName: string, exports: {interfaces: ts.Inter
     
     exports.functions.forEach(func => {
       const functionName = func.name!.getText()
+      
+      // Handle function type parameters
+      const typeParams = func.typeParameters?.map(tp => {
+        const paramName = tp.name.getText()
+        const constraint = tp.constraint ? ` <: ${convertTypeToScala(tp.constraint)}` : ''
+        return `${paramName}${constraint}`
+      }) || []
+      
+      const typeParamString = typeParams.length > 0 ? `[${typeParams.join(', ')}]` : ''
+      
       const params = func.parameters.map(p => {
         const paramName = p.name.getText()
         const paramType = p.type ? convertTypeToScala(p.type) : 'js.Any'
         return `${paramName}: ${paramType}`
       }).join(', ')
       
-      const returnType = func.type ? convertTypeToScala(func.type) : 'Unit'
-      writer.writeLine(`def ${functionName}(${params}): ${returnType} = js.native`)
+      const returnType = func.type ? convertTypeToScala(func.type) : 'js.Dynamic'
+      writer.writeLine(`def ${functionName}${typeParamString}(${params}): ${returnType} = js.native`)
     })
   })
   writer.newLine()
@@ -600,7 +780,11 @@ function generateGlobalScopeObject(packageName: string, exports: {interfaces: ts
 
 function getTypeAliasName(typeAlias: ts.TypeAliasDeclaration): string {
   const name = typeAlias.name.getText()
-  const typeParams = typeAlias.typeParameters?.map(tp => tp.name.getText()) || []
+  const typeParams = typeAlias.typeParameters?.map(tp => {
+    const paramName = tp.name.getText()
+    const constraint = tp.constraint ? ` <: ${convertTypeToScala(tp.constraint)}` : ''
+    return `${paramName}${constraint}`
+  }) || []
   
   if (typeParams.length > 0) {
     return `${name}[${typeParams.join(', ')}]`
