@@ -131,9 +131,10 @@ function processModuleDeclaration(node: ts.ModuleDeclaration, writer: CodeBlockW
     
     if (node.body && ts.isModuleBlock(node.body)) {
       // Collect exports for module object
-      const exports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[]} = {
+      const exports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[], functions: ts.FunctionDeclaration[]} = {
         interfaces: [],
-        types: []
+        types: [],
+        functions: []
       }
       
       // Process declarations and collect exports
@@ -143,13 +144,15 @@ function processModuleDeclaration(node: ts.ModuleDeclaration, writer: CodeBlockW
             exports.interfaces.push(statement)
           } else if (ts.isTypeAliasDeclaration(statement)) {
             exports.types.push(statement)
+          } else if (ts.isFunctionDeclaration(statement)) {
+            exports.functions.push(statement)
           }
         }
         processStatement(statement, writer, newNamespace)
       })
       
       // Generate module object if there are exports
-      if (exports.types.length > 0) {
+      if (exports.types.length > 0 || exports.functions.length > 0) {
         generateModuleObject(moduleName, exports, writer)
       }
     }
@@ -166,13 +169,19 @@ function processClassDeclaration(node: ts.ClassDeclaration, writer: CodeBlockWri
   const isAbstract = node.modifiers?.some(mod => mod.kind === ts.SyntaxKind.AbstractKeyword)
   const isExport = hasExportModifier(node)
   
-  // Skip processing if it's a top-level export (will be handled in global scope object)
-  if (isExport && !namespace) {
+  // For exported classes in modules
+  if (isExport) {
     writer.newLine()
     const currentIndentLevel = writer.getIndentationLevel()
     writer.setIndentationLevel(0)
     writer.write('@js.native').newLine()
-    writer.write('@JSGlobal').newLine()
+    
+    if (namespace) {
+      writer.write(`@JSGlobal("${namespace}.${className}")`).newLine()
+    } else {
+      writer.write('@JSGlobal').newLine()
+    }
+    
     writer.write(`${isAbstract ? 'abstract ' : ''}class ${className} extends js.Object `).block(() => {
       node.members.forEach(member => {
         processClassMember(member, writer, isAbstract)
@@ -231,7 +240,7 @@ function processInterfaceDeclaration(node: ts.InterfaceDeclaration, writer: Code
 function processClassMember(member: ts.ClassElement, writer: CodeBlockWriter, isAbstractClass?: boolean): void {
   switch (member.kind) {
     case ts.SyntaxKind.PropertyDeclaration:
-      processPropertyDeclaration(member as ts.PropertyDeclaration, writer)
+      processPropertyDeclaration(member as ts.PropertyDeclaration, writer, isAbstractClass)
       break
     case ts.SyntaxKind.MethodDeclaration:
       processMethodDeclaration(member as ts.MethodDeclaration, writer, isAbstractClass)
@@ -250,10 +259,13 @@ function processInterfaceMember(member: ts.TypeElement, writer: CodeBlockWriter)
   }
 }
 
-function processPropertyDeclaration(node: ts.PropertyDeclaration, writer: CodeBlockWriter): void {
+function processPropertyDeclaration(node: ts.PropertyDeclaration, writer: CodeBlockWriter, isAbstractClass?: boolean): void {
   const name = node.name.getText()
   const typeText = node.type ? convertTypeToScala(node.type) : 'js.Any'
-  writer.writeLine(`var ${name}: ${typeText}`)
+  
+  // Class properties don't need = js.native implementation for abstract classes
+  const implementation = isAbstractClass ? '' : ' = js.native'
+  writer.writeLine(`var ${name}: ${typeText}${implementation}`)
 }
 
 function processPropertySignature(node: ts.PropertySignature, writer: CodeBlockWriter): void {
@@ -366,6 +378,8 @@ function convertTypeToScala(typeNode: ts.TypeNode): string {
       return 'Unit'
     case ts.SyntaxKind.AnyKeyword:
       return 'js.Any'
+    case ts.SyntaxKind.NeverKeyword:
+      return 'Nothing'
     case ts.SyntaxKind.TypeReference:
       return convertTypeReference(typeNode as ts.TypeReferenceNode)
     case ts.SyntaxKind.LiteralType:
@@ -396,7 +410,8 @@ function convertLiteralType(node: ts.LiteralTypeNode): string {
     case ts.SyntaxKind.StringLiteral:
       return 'String'
     case ts.SyntaxKind.NumericLiteral:
-      return 'Double'
+      const text = literal.getText()
+      return text.includes('.') ? 'Double' : 'Int'
     default:
       return 'js.Any'
   }
@@ -405,6 +420,11 @@ function convertLiteralType(node: ts.LiteralTypeNode): string {
 function convertTypeReference(node: ts.TypeReferenceNode): string {
   const typeName = node.typeName.getText()
   const typeArgs = node.typeArguments?.map(arg => convertTypeToScala(arg)) || []
+  
+  // Handle special Array type conversion
+  if (typeName === 'Array' && typeArgs.length > 0) {
+    return `js.Array[${typeArgs.join(', ')}]`
+  }
   
   if (typeArgs.length > 0) {
     return `${typeName}[${typeArgs.join(', ')}]`
@@ -444,6 +464,36 @@ function convertUnionType(node: ts.UnionTypeNode): string {
     return 'String'
   }
   
+  // Check if all types are numeric literals of the same category
+  const allNumericLiterals = node.types.every(t => 
+    ts.isLiteralTypeNode(t) && ts.isNumericLiteral(t.literal)
+  )
+  
+  if (allNumericLiterals) {
+    // Check if all are integers or all are doubles
+    const allIntegers = node.types.every(t => {
+      if (ts.isLiteralTypeNode(t) && ts.isNumericLiteral(t.literal)) {
+        const text = t.literal.getText()
+        return !text.includes('.')
+      }
+      return false
+    })
+    
+    const allDoubles = node.types.every(t => {
+      if (ts.isLiteralTypeNode(t) && ts.isNumericLiteral(t.literal)) {
+        const text = t.literal.getText()
+        return text.includes('.')
+      }
+      return false
+    })
+    
+    if (allIntegers) {
+      return 'Int'
+    } else if (allDoubles) {
+      return 'Double'
+    }
+  }
+  
   // Remove duplicates and join with |
   const uniqueTypes = [...new Set(types)]
   
@@ -476,8 +526,8 @@ function hasExportModifier(node: ts.Node): boolean {
   return node.modifiers?.some(mod => mod.kind === ts.SyntaxKind.ExportKeyword) ?? false
 }
 
-function generateModuleObject(moduleName: string, exports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[]}, writer: CodeBlockWriter): void {
-  if (exports.types.length === 0) return
+function generateModuleObject(moduleName: string, exports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[], functions: ts.FunctionDeclaration[]}, writer: CodeBlockWriter): void {
+  if (exports.types.length === 0 && exports.functions.length === 0) return
   
   writer.newLine()
   const currentIndentLevel = writer.getIndentationLevel()
@@ -489,6 +539,18 @@ function generateModuleObject(moduleName: string, exports: {interfaces: ts.Inter
       const typeName = getTypeAliasName(typeAlias)
       const typeValue = convertTypeAliasToScala(typeAlias)
       writer.writeLine(`type ${typeName} = ${typeValue}`)
+    })
+    
+    exports.functions.forEach(func => {
+      const functionName = func.name!.getText()
+      const params = func.parameters.map(p => {
+        const paramName = p.name.getText()
+        const paramType = p.type ? convertTypeToScala(p.type) : 'js.Any'
+        return `${paramName}: ${paramType}`
+      }).join(', ')
+      
+      const returnType = func.type ? convertTypeToScala(func.type) : 'Unit'
+      writer.writeLine(`def ${functionName}(${params}): ${returnType} = js.native`)
     })
   })
   writer.newLine()
