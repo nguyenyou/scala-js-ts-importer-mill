@@ -12,7 +12,6 @@ class Point protected () extends js.Object {
   def x: Double = js.native
   def y: Double = js.native
 }
-
 @js.native
 @JSGlobal
 object Point extends js.Object {
@@ -28,7 +27,6 @@ class Circle protected () extends js.Object {
   def center: Point = js.native
   def radius: Double = js.native
 }
-
 @js.native
 @JSGlobal("nested.Circle")
 object Circle extends js.Object {
@@ -42,7 +40,6 @@ object Nested extends js.Object {
 }
 
 }
-
 @js.native
 @JSGlobalScope
 object Jsglobal extends js.Object {
@@ -50,5 +47,6 @@ object Jsglobal extends js.Object {
   def globalVar: String = js.native
   def globalFunc(): String = js.native
 }
+
 
 }

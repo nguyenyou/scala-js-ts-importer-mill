@@ -11,21 +11,17 @@ package A {
 trait Info extends js.Object {
   var settings: Info.Settings = js.native
 }
-
 object Info {
-
-@js.native
-trait Settings extends js.Object {
-  var state: Settings.State = js.native
-}
-
-object Settings {
-
-@js.native
-trait State extends js.Object {
-  var enable: Boolean = js.native
-}
-}
+  @js.native
+  trait Settings extends js.Object {
+    var state: Settings.State = js.native
+  }
+  object Settings {
+    @js.native
+    trait State extends js.Object {
+      var enable: Boolean = js.native
+    }
+  }
 }
 
 @js.native

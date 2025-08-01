@@ -14,11 +14,11 @@ object Mod extends js.Object {
 }
 
 }
-
 @js.native
 @JSGlobalScope
 object Import extends js.Object {
   val hello: String = js.native
 }
+
 
 }

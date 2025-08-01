@@ -19,7 +19,6 @@ class Fuga extends js.Object {
 }
 
 }
-
 package PIXI {
 
 @js.native
@@ -29,11 +28,11 @@ object PIXI extends js.Object {
 }
 
 }
-
 @js.native
 @JSGlobalScope
 object Export extends js.Object {
   val numberRegexp: String = js.native
 }
+
 
 }

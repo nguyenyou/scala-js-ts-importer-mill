@@ -49,7 +49,6 @@ class Uri extends js.Object {
   def authority: String = js.native
   def path: String = js.native
 }
-
 @js.native
 @JSGlobal("modifiers.Uri")
 object Uri extends js.Object {
