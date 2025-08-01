@@ -4,7 +4,7 @@
   "description": "TypeScript to Scala.js converter",
   "type": "module",
   "scripts": {
-    "test": "vitest",
+    "test": "vitest --run",
     "test:ui": "vitest --ui",
     "build": "tsc",
     "start": "node dist/index.js"
