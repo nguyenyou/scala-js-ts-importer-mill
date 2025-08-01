@@ -1,7 +1,0 @@
-{
-  "mcpServers": {
-    "scala-js-ts-importer-metals": {
-      "url": "http://localhost:58267/sse"
-    }
-  }
-}

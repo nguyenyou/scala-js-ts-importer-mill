@@ -1,0 +1,1 @@
+{"name":"mill-bsp","argv":["/Users/tunguyen/.cache/mill/download/1.0.2-native-mac-aarch64","--bsp","--ticker","false","--color","false","--jobs","0"],"millVersion":"1.0.2","bspVersion":"2.2.0-M2","languages":["java","scala","kotlin"]}
