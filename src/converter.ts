@@ -360,18 +360,21 @@ function processMethodSignature(node: ts.MethodSignature, writer: CodeBlockWrite
     const paramName = p.name.getText()
     let paramType = p.type ? convertTypeToScala(p.type) : 'js.Any'
     
+    // Handle reserved words for parameter names
+    const safeParamName = reservedWords.includes(paramName) ? `\`${paramName}\`` : paramName
+    
     // Handle rest parameters
     if (p.dotDotDotToken) {
       paramType = paramType.replace(/^js\.Array\[(.+)\]$/, '$1')
-      return `${paramName}: ${paramType}*`
+      return `${safeParamName}: ${paramType}*`
     }
     
     // Handle optional parameters
     const optional = p.questionToken ? ' = ???' : ''
-    return `${paramName}: ${paramType}${optional}`
+    return `${safeParamName}: ${paramType}${optional}`
   }).join(', ')
   
-  const returnType = node.type ? convertTypeToScala(node.type) : 'Unit'
+  const returnType = node.type ? convertTypeToScala(node.type) : 'js.Dynamic'
   writer.writeLine(`def ${safeName}${typeParamString}(${params}): ${returnType} = js.native`)
 }
 
