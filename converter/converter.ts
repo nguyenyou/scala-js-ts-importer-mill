@@ -15,6 +15,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as ts from "typescript";
 
 function printUsageAndExit(): never {
   console.error("Usage: node converter.js <input.d.ts> <output.scala> <outputPackage>");
@@ -28,6 +29,19 @@ function main() {
   }
 
   const expectedScalaPath = `${inputPath}.scala`;
+
+  // Read the input file and parse it into a TypeScript AST (for future use)
+  const sourceText = fs.readFileSync(inputPath, { encoding: "utf8" });
+  const sourceFile = ts.createSourceFile(
+    path.basename(inputPath),
+    sourceText,
+    ts.ScriptTarget.Latest,
+    /*setParentNodes*/ true,
+    ts.ScriptKind.TS
+  );
+
+  // For debugging purposes you can uncomment the next line to print the AST
+  // console.log(ts.transform(sourceFile, []).transformed[0].statements);
 
   try {
     if (fs.existsSync(expectedScalaPath)) {
