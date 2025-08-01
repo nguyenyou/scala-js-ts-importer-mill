@@ -374,6 +374,14 @@ function convertTypeToScala(typeNode: ts.TypeNode): string {
       return 'js.Any' // Object types become js.Any for now
     case ts.SyntaxKind.FunctionType:
       return convertFunctionType(typeNode as ts.FunctionTypeNode)
+    case ts.SyntaxKind.ParenthesizedType:
+      return convertTypeToScala((typeNode as ts.ParenthesizedTypeNode).type)
+    case ts.SyntaxKind.ArrayType:
+      return convertArrayType(typeNode as ts.ArrayTypeNode)
+    case ts.SyntaxKind.UnionType:
+      return convertUnionType(typeNode as ts.UnionTypeNode)
+    case ts.SyntaxKind.IntersectionType:
+      return convertIntersectionType(typeNode as ts.IntersectionTypeNode)
     default:
       return 'js.Any'
   }
@@ -405,8 +413,8 @@ function convertTypeReference(node: ts.TypeReferenceNode): string {
 }
 
 function convertFunctionType(node: ts.FunctionTypeNode): string {
-  const params = node.parameters.map(p => convertTypeToScala(p.type!))
-  const returnType = convertTypeToScala(node.type)
+  const params = node.parameters.map(p => p.type ? convertTypeToScala(p.type) : 'js.Any')
+  const returnType = node.type ? convertTypeToScala(node.type) : 'Unit'
   
   if (params.length === 0) {
     return `js.Function0[${returnType}]`
@@ -417,6 +425,51 @@ function convertFunctionType(node: ts.FunctionTypeNode): string {
   } else {
     return 'js.Function'
   }
+}
+
+function convertArrayType(node: ts.ArrayTypeNode): string {
+  const elementType = convertTypeToScala(node.elementType)
+  return `js.Array[${elementType}]`
+}
+
+function convertUnionType(node: ts.UnionTypeNode): string {
+  const types = node.types.map(t => convertTypeToScala(t))
+  
+  // Check if all types are string literals - if so, simplify to String
+  const allStringLiterals = node.types.every(t => 
+    ts.isLiteralTypeNode(t) && ts.isStringLiteral(t.literal)
+  )
+  
+  if (allStringLiterals) {
+    return 'String'
+  }
+  
+  // Remove duplicates and join with |
+  const uniqueTypes = [...new Set(types)]
+  
+  // If we have multiple string literals plus other types, simplify string literals to String
+  const hasStringLiterals = node.types.some(t => 
+    ts.isLiteralTypeNode(t) && ts.isStringLiteral(t.literal)
+  )
+  const hasNonStringLiterals = node.types.some(t => 
+    !(ts.isLiteralTypeNode(t) && ts.isStringLiteral(t.literal))
+  )
+  
+  if (hasStringLiterals && hasNonStringLiterals) {
+    // Replace all string literal types with a single "String"
+    const nonStringLiteralTypes = node.types
+      .filter(t => !(ts.isLiteralTypeNode(t) && ts.isStringLiteral(t.literal)))
+      .map(t => convertTypeToScala(t))
+    
+    return ['String', ...nonStringLiteralTypes].join(' | ')
+  }
+  
+  return uniqueTypes.join(' | ')
+}
+
+function convertIntersectionType(node: ts.IntersectionTypeNode): string {
+  const types = node.types.map(t => convertTypeToScala(t))
+  return types.join(' with ')
 }
 
 function hasExportModifier(node: ts.Node): boolean {
