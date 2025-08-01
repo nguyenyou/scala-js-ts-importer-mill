@@ -137,6 +137,11 @@ function processStatement(statement: ts.Statement, writer: CodeBlockWriter, name
 }
 
 function processModuleDeclaration(node: ts.ModuleDeclaration, writer: CodeBlockWriter, namespace: string): void {
+  // Skip module declarations whose name is a string literal (e.g. "declare module \"pixi.js\"")
+  if (ts.isStringLiteral(node.name)) {
+    return
+  }
+
   const moduleName = node.name.getText()
   const newNamespace = namespace ? `${namespace}.${moduleName}` : moduleName
   
@@ -205,6 +210,21 @@ function processClassDeclaration(node: ts.ClassDeclaration, writer: CodeBlockWri
   writer.newLine()
   const currentIndentLevel = writer.getIndentationLevel()
   writer.setIndentationLevel(0)
+  // Separate static members for a companion object
+  const staticMethods: ts.MethodDeclaration[] = []
+  const staticProperties: ts.PropertyDeclaration[] = []
+
+  node.members.forEach(member => {
+    if (member.modifiers?.some(m => m.kind === ts.SyntaxKind.StaticKeyword)) {
+      if (ts.isMethodDeclaration(member)) staticMethods.push(member)
+      else if (ts.isPropertyDeclaration(member)) staticProperties.push(member)
+    }
+  })
+
+  // Determine if the JS class explicitly defines constructors with parameters
+  const ctorDeclarations = node.members.filter(ts.isConstructorDeclaration) as ts.ConstructorDeclaration[]
+  const hasParamCtor = ctorDeclarations.some(c => c.parameters.length > 0)
+
   writer.write('@js.native').newLine()
   
   // @JSGlobal logic:
@@ -216,12 +236,50 @@ function processClassDeclaration(node: ts.ClassDeclaration, writer: CodeBlockWri
     writer.write('@JSGlobal').newLine()
   }
   
-  writer.write(`${isAbstract ? 'abstract ' : ''}class ${safeClassName}${typeParamString} extends js.Object `).block(() => {
+  writer.write(`${isAbstract ? 'abstract ' : ''}class ${safeClassName}${typeParamString}${hasParamCtor ? ' protected ()' : ''} extends js.Object `).block(() => {
+    // Add explicit secondary constructors for each JS constructor with parameters
+    ctorDeclarations.forEach(cons => {
+      if (cons.parameters.length === 0) return
+      const params = cons.parameters.map(p => {
+        const paramName = p.name.getText()
+        const paramType = p.type ? convertTypeToScala(p.type) : 'js.Any'
+        return `${paramName}: ${paramType}`
+      }).join(', ')
+      writer.writeLine(`def this(${params}) = this()`)
+    })
+
+    // Non-static members
     node.members.forEach(member => {
+      if (member.modifiers?.some(m => m.kind === ts.SyntaxKind.StaticKeyword)) return
       processClassMember(member, writer, isAbstract)
     })
   })
   writer.newLine()
+
+  // Generate companion object for static members, if any
+  if (staticMethods.length > 0 || staticProperties.length > 0) {
+    writer.write('@js.native').newLine()
+    if (namespace) {
+      writer.write(`@JSGlobal("${namespace}.${className}")`).newLine()
+    } else {
+      writer.write(`@JSGlobal("${className}")`).newLine()
+    }
+    writer.write(`object ${safeClassName} extends js.Object `).block(() => {
+      staticProperties.forEach(prop => {
+        // Skip private or protected static members
+        if (prop.modifiers?.some(m => m.kind === ts.SyntaxKind.PrivateKeyword || m.kind === ts.SyntaxKind.ProtectedKeyword))
+          return
+        const propName = prop.name.getText()
+        const isReadonly = prop.modifiers?.some(m => m.kind === ts.SyntaxKind.ReadonlyKeyword)
+        const keyword = isReadonly ? 'val' : 'var'
+        const typeText = prop.type ? convertTypeToScala(prop.type) : 'js.Any'
+        writer.writeLine(`${keyword} ${propName}: ${typeText} = js.native`)
+      })
+      staticMethods.forEach(m => processMethodDeclaration(m, writer))
+    })
+    writer.newLine()
+  }
+
   writer.setIndentationLevel(currentIndentLevel)
 }
 
@@ -238,29 +296,80 @@ function processInterfaceDeclaration(node: ts.InterfaceDeclaration, writer: Code
   
   const typeParamString = typeParams.length > 0 ? `[${typeParams.join(', ')}]` : ''
   
-  // For exported interfaces in modules, no @JSGlobal annotation
-  if (isExport) {
-    writer.newLine()
-    const currentIndentLevel = writer.getIndentationLevel()
-    writer.setIndentationLevel(0)
+  // Helper to write the interface trait itself
+  const writeInterfaceTrait = () => {
     writer.write('@js.native').newLine()
     writer.write(`trait ${interfaceName}${typeParamString} extends js.Object `).block(() => {
-      processInterfaceMembersWithDeduplication(node.members, writer)
+      node.members.forEach(member => {
+        // Handle inline type literals so that we generate nested traits
+        if (ts.isPropertySignature(member) && member.type && ts.isTypeLiteralNode(member.type)) {
+          const propName = member.name.getText()
+          const traitName = capitalize(propName)
+          const isReadonly = member.modifiers?.some(m => m.kind === ts.SyntaxKind.ReadonlyKeyword)
+          const keyword = isReadonly ? 'def' : 'var'
+          writer.writeLine(`${keyword} ${propName}: ${interfaceName}.${traitName} = js.native`)
+        } else {
+          processInterfaceMember(member, writer)
+        }
+      })
     })
-    writer.newLine()
-    writer.setIndentationLevel(currentIndentLevel)
-    return
   }
-  
-  // Non-exported interfaces at top level should not have @JSGlobal
+
   writer.newLine()
   const currentIndentLevel = writer.getIndentationLevel()
   writer.setIndentationLevel(0)
-  writer.write('@js.native').newLine()
-  // Don't add @JSGlobal for top-level interfaces
-  writer.write(`trait ${interfaceName}${typeParamString} extends js.Object `).block(() => {
-    processInterfaceMembersWithDeduplication(node.members, writer)
-  })
+
+  if (isExport) {
+    // Exported interfaces should not get @JSGlobal
+    writeInterfaceTrait()
+  } else {
+    // Non-exported interfaces at top level should not have @JSGlobal either
+    writeInterfaceTrait()
+  }
+
+  // Generate companion object with nested traits for inline object literal types
+  const inlineTypeLiteralMembers = node.members.filter(m => ts.isPropertySignature(m) && m.type && ts.isTypeLiteralNode((m as ts.PropertySignature).type)) as ts.PropertySignature[]
+  if (inlineTypeLiteralMembers.length > 0) {
+    writer.newLine()
+    writer.write('@js.native').newLine()
+    writer.write(`object ${interfaceName} extends js.Object `).block(() => {
+      inlineTypeLiteralMembers.forEach(propSig => {
+        const traitName = capitalize(propSig.name.getText())
+        const typeLiteral = propSig.type as ts.TypeLiteralNode
+        // Generate nested trait
+        writer.write('@js.native').newLine()
+        writer.write(`trait ${traitName} extends js.Object `).block(() => {
+          typeLiteral.members.forEach(nestedMember => {
+            if (ts.isPropertySignature(nestedMember) && nestedMember.type && ts.isTypeLiteralNode(nestedMember.type)) {
+              const nestedPropName = nestedMember.name.getText()
+              const nestedTraitName = capitalize(nestedPropName)
+              writer.writeLine(`var ${nestedPropName}: ${traitName}.${nestedTraitName} = js.native`)
+            } else {
+              processInterfaceMember(nestedMember, writer)
+            }
+          })
+        })
+
+        // Recursively handle deeper nested type literals by creating an object inside
+        const deepInlineMembers = typeLiteral.members.filter(mem => ts.isPropertySignature(mem) && mem.type && ts.isTypeLiteralNode((mem as ts.PropertySignature).type)) as ts.PropertySignature[]
+        if (deepInlineMembers.length > 0) {
+          writer.newLine()
+          writer.write('@js.native').newLine()
+          writer.write(`object ${traitName} `).block(() => {
+            deepInlineMembers.forEach(nestedPropSig => {
+              const nestedTraitName = capitalize(nestedPropSig.name.getText())
+              const nestedTypeLiteral = nestedPropSig.type as ts.TypeLiteralNode
+              writer.write('@js.native').newLine()
+              writer.write(`trait ${nestedTraitName} extends js.Object `).block(() => {
+                nestedTypeLiteral.members.forEach(deepMember => processInterfaceMember(deepMember, writer))
+              })
+            })
+          })
+        }
+      })
+    })
+  }
+
   writer.newLine()
   writer.setIndentationLevel(currentIndentLevel)
 }
@@ -291,18 +400,32 @@ function processInterfaceMember(member: ts.TypeElement, writer: CodeBlockWriter)
 }
 
 function processPropertyDeclaration(node: ts.PropertyDeclaration, writer: CodeBlockWriter, isAbstractClass?: boolean): void {
+  // Skip private or protected members
+  if (node.modifiers?.some(m => m.kind === ts.SyntaxKind.PrivateKeyword || m.kind === ts.SyntaxKind.ProtectedKeyword)) {
+    return
+  }
+
+  // Skip static members here; they will be handled in the companion object
+  if (node.modifiers?.some(m => m.kind === ts.SyntaxKind.StaticKeyword)) {
+    return
+  }
+
   const name = node.name.getText()
   const typeText = node.type ? convertTypeToScala(node.type) : 'js.Any'
-  
+
+  const isReadonly = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ReadonlyKeyword)
+  const keyword = isReadonly ? 'def' : 'var'
   // Class properties don't need = js.native implementation for abstract classes
   const implementation = isAbstractClass ? '' : ' = js.native'
-  writer.writeLine(`var ${name}: ${typeText}${implementation}`)
+  writer.writeLine(`${keyword} ${name}: ${typeText}${implementation}`)
 }
 
 function processPropertySignature(node: ts.PropertySignature, writer: CodeBlockWriter): void {
   const name = node.name.getText()
   const typeText = node.type ? convertTypeToScala(node.type) : 'js.Any'
-  writer.writeLine(`var ${name}: ${typeText} = js.native`)
+  const isReadonly = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ReadonlyKeyword)
+  const keyword = isReadonly ? 'def' : 'var'
+  writer.writeLine(`${keyword} ${name}: ${typeText} = js.native`)
 }
 
 function processMethodDeclaration(node: ts.MethodDeclaration, writer: CodeBlockWriter, isAbstractClass?: boolean): void {
@@ -340,7 +463,8 @@ function processMethodDeclaration(node: ts.MethodDeclaration, writer: CodeBlockW
   
   // Abstract class methods don't have implementations
   const implementation = isAbstractClass ? '' : ' = js.native'
-  writer.writeLine(`def ${safeName}${typeParamString}(${params}): ${returnType}${implementation}`)
+    const overridePrefix = ["toString", "clone"].includes(name) ? "override " : ""
+  writer.writeLine(`${overridePrefix}def ${safeName}${typeParamString}(${params}): ${returnType}${implementation}`)
 }
 
 function processMethodSignature(node: ts.MethodSignature, writer: CodeBlockWriter): void {
@@ -378,7 +502,8 @@ function processMethodSignature(node: ts.MethodSignature, writer: CodeBlockWrite
   }).join(', ')
   
   const returnType = node.type ? convertTypeToScala(node.type) : 'js.Dynamic'
-  writer.writeLine(`def ${safeName}${typeParamString}(${params}): ${returnType} = js.native`)
+    const overridePrefix = ["toString", "clone"].includes(name) ? "override " : ""
+  writer.writeLine(`${overridePrefix}def ${safeName}${typeParamString}(${params}): ${returnType} = js.native`)
 }
 
 function processIndexSignature(node: ts.IndexSignatureDeclaration, writer: CodeBlockWriter): void {
@@ -655,15 +780,7 @@ function convertUnionType(node: ts.UnionTypeNode): string {
   // Remove duplicates and join with |
   const uniqueTypes = [...new Set(types)]
   
-  // Handle common nullable patterns: T | Null | Unit becomes T | js.Any
-  if (uniqueTypes.includes('Null') && uniqueTypes.includes('Unit')) {
-    const otherTypes = uniqueTypes.filter(t => t !== 'Null' && t !== 'Unit')
-    if (otherTypes.length === 1) {
-      return `${otherTypes[0]} | js.Any`
-    } else if (otherTypes.length > 1) {
-      return `${otherTypes.join(' | ')} | js.Any`
-    }
-  }
+
   
   // If we have multiple string literals plus other types, simplify string literals to String
   const hasStringLiterals = node.types.some(t => 
@@ -795,7 +912,10 @@ function generateGlobalScopeObject(packageName: string, exports: {interfaces: ts
     exports.variables.forEach(variable => {
       const varName = variable.name.getText()
       const varType = variable.type ? convertTypeToScala(variable.type) : 'js.Any'
-      writer.writeLine(`val ${varName}: ${varType} = js.native`)
+      let keyword = 'def'
+      const declList = variable.parent as ts.VariableDeclarationList
+      if (declList.flags & ts.NodeFlags.Const) keyword = 'val'
+      writer.writeLine(`${keyword} ${varName}: ${varType} = js.native`)
     })
   })
   writer.newLine()
@@ -830,26 +950,12 @@ function processExportAssignment(node: ts.ExportAssignment, writer: CodeBlockWri
 }
 
 function processInterfaceMembersWithDeduplication(members: readonly ts.TypeElement[], writer: CodeBlockWriter): void {
-  const processedSignatures = new Set<string>()
-  
+  // Simply forward to the regular member processing helpers.  The original
+  // implementation tried to build the signature string manually, but that led
+  // to missing information such as type parameters, reserved-word handling,
+  // optional/rest parameters, etc.  Re-using the existing helper methods
+  // guarantees consistency.
   members.forEach(member => {
-    if (ts.isMethodSignature(member)) {
-      const name = member.name.getText()
-      const params = member.parameters.map(p => {
-        const paramName = p.name.getText()
-        const paramType = p.type ? convertTypeToScala(p.type) : 'js.Any'
-        return `${paramName}: ${paramType}`
-      }).join(', ')
-      
-      const returnType = member.type ? convertTypeToScala(member.type) : 'Unit'
-      const signature = `def ${name}(${params}): ${returnType} = js.native`
-      
-      if (!processedSignatures.has(signature)) {
-        processedSignatures.add(signature)
-        writer.writeLine(signature)
-      }
-    } else {
-      processInterfaceMember(member, writer)
-    }
+    processInterfaceMember(member, writer)
   })
 }

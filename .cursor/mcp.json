@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "scala-js-ts-importer-mill-metals": {
-      "url": "http://localhost:62996/sse"
+      "url": "http://localhost:64404/sse"
     }
   }
 }
