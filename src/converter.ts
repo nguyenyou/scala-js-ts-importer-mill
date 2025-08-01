@@ -155,12 +155,13 @@ function processModuleDeclaration(node: ts.ModuleDeclaration, writer: CodeBlockW
   writer.write(`package ${safeModuleName} `).block(() => {
     
     if (node.body && ts.isModuleBlock(node.body)) {
-      // Collect exports for module object
-      const exports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[], functions: ts.FunctionDeclaration[]} = {
-        interfaces: [],
-        types: [],
-        functions: []
-      }
+        // Collect exports for module object
+  const exports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[], functions: ts.FunctionDeclaration[], variables: ts.VariableDeclaration[]} = {
+    interfaces: [],
+    types: [],
+    functions: [],
+    variables: []
+  }
       
       // Process declarations and collect exports
       node.body.statements.forEach(statement => {
@@ -172,12 +173,18 @@ function processModuleDeclaration(node: ts.ModuleDeclaration, writer: CodeBlockW
           exports.types.push(statement)
         } else if (ts.isFunctionDeclaration(statement)) {
           exports.functions.push(statement)
+        } else if (ts.isVariableStatement(statement)) {
+          statement.declarationList.declarations.forEach(decl => {
+            if (!(decl.type && ts.isTypeLiteralNode(decl.type))) {
+              exports.variables.push(decl)
+            }
+          })
         }
         processStatement(statement, writer, newNamespace)
       })
       
       // Generate module object if there are exports
-      if (exports.types.length > 0 || exports.functions.length > 0) {
+      if (exports.types.length > 0 || exports.functions.length > 0 || exports.variables.length > 0) {
         generateModuleObject(moduleName, exports, writer)
       }
     }
@@ -236,7 +243,29 @@ function processClassDeclaration(node: ts.ClassDeclaration, writer: CodeBlockWri
     writer.write('@JSGlobal').newLine()
   }
   
-  writer.write(`${isAbstract ? 'abstract ' : ''}class ${safeClassName}${typeParamString}${hasParamCtor ? ' protected ()' : ''} extends js.Object `).block(() => {
+  // Handle heritage clauses (extends / implements)
+  let heritageTypes: string[] = []
+  if (node.heritageClauses) {
+    node.heritageClauses.forEach(h => {
+      h.types.forEach(t => {
+        heritageTypes.push(t.expression.getText())
+      })
+    })
+  }
+  let extendsType = 'js.Object'
+  if (heritageTypes.length > 0) {
+    const extendsClause = node.heritageClauses?.find(h => h.token === ts.SyntaxKind.ExtendsKeyword)
+    if (extendsClause && extendsClause.types.length > 0) {
+      extendsType = extendsClause.types[0].expression.getText()
+      heritageTypes = heritageTypes.slice(1)
+    } else {
+      // No explicit extends clause but we have implements – promote first to base
+      extendsType = heritageTypes.shift()!
+    }
+  }
+  const heritageString = [extendsType, ...heritageTypes].join(' with ')
+
+  writer.write(`${isAbstract ? 'abstract ' : ''}class ${safeClassName}${typeParamString}${hasParamCtor ? ' protected ()' : ''} extends ${heritageString} `).block(() => {
     // Add explicit secondary constructors for each JS constructor with parameters
     ctorDeclarations.forEach(cons => {
       if (cons.parameters.length === 0) return
@@ -259,10 +288,11 @@ function processClassDeclaration(node: ts.ClassDeclaration, writer: CodeBlockWri
   // Generate companion object for static members, if any
   if (staticMethods.length > 0 || staticProperties.length > 0) {
     writer.write('@js.native').newLine()
-    if (namespace) {
-      writer.write(`@JSGlobal("${namespace}.${className}")`).newLine()
+    const baseNs = namespace ? namespace.split('.').pop()! : undefined
+    if (baseNs) {
+      writer.write(`@JSGlobal("${baseNs}.${className}")`).newLine()
     } else {
-      writer.write(`@JSGlobal("${className}")`).newLine()
+      writer.write('@JSGlobal').newLine()
     }
     writer.write(`object ${safeClassName} extends js.Object `).block(() => {
       staticProperties.forEach(prop => {
@@ -275,7 +305,10 @@ function processClassDeclaration(node: ts.ClassDeclaration, writer: CodeBlockWri
         const typeText = prop.type ? convertTypeToScala(prop.type) : 'js.Any'
         writer.writeLine(`${keyword} ${propName}: ${typeText} = js.native`)
       })
-      staticMethods.forEach(m => processMethodDeclaration(m, writer))
+      staticMethods.forEach(m => {
+        if (m.modifiers?.some(mod => mod.kind === ts.SyntaxKind.PrivateKeyword || mod.kind === ts.SyntaxKind.ProtectedKeyword)) return
+        processMethodDeclaration(m, writer)
+      })
     })
     writer.newLine()
   }
@@ -300,6 +333,7 @@ function processInterfaceDeclaration(node: ts.InterfaceDeclaration, writer: Code
   const writeInterfaceTrait = () => {
     writer.write('@js.native').newLine()
     writer.write(`trait ${interfaceName}${typeParamString} extends js.Object `).block(() => {
+      const seen = new Set<string>()
       node.members.forEach(member => {
         // Handle inline type literals so that we generate nested traits
         if (ts.isPropertySignature(member) && member.type && ts.isTypeLiteralNode(member.type)) {
@@ -307,9 +341,19 @@ function processInterfaceDeclaration(node: ts.InterfaceDeclaration, writer: Code
           const traitName = capitalize(propName)
           const isReadonly = member.modifiers?.some(m => m.kind === ts.SyntaxKind.ReadonlyKeyword)
           const keyword = isReadonly ? 'def' : 'var'
-          writer.writeLine(`${keyword} ${propName}: ${interfaceName}.${traitName} = js.native`)
+          const line = `${keyword} ${propName}: ${interfaceName}.${traitName} = js.native`
+          if (!seen.has(line)) {
+            seen.add(line)
+            writer.writeLine(line)
+          }
         } else {
-          processInterfaceMember(member, writer)
+          const temp = new CodeBlockWriter({ indentNumberOfSpaces: 0, newLine: '\n' })
+          processInterfaceMember(member, temp)
+          const sig = temp.toString().trim()
+          if (!seen.has(sig)) {
+            seen.add(sig)
+            writer.writeLine(sig)
+          }
         }
       })
     })
@@ -331,8 +375,7 @@ function processInterfaceDeclaration(node: ts.InterfaceDeclaration, writer: Code
   const inlineTypeLiteralMembers = node.members.filter(m => ts.isPropertySignature(m) && m.type && ts.isTypeLiteralNode((m as ts.PropertySignature).type)) as ts.PropertySignature[]
   if (inlineTypeLiteralMembers.length > 0) {
     writer.newLine()
-    writer.write('@js.native').newLine()
-    writer.write(`object ${interfaceName} extends js.Object `).block(() => {
+    writer.write(`object ${interfaceName} `).block(() => {
       inlineTypeLiteralMembers.forEach(propSig => {
         const traitName = capitalize(propSig.name.getText())
         const typeLiteral = propSig.type as ts.TypeLiteralNode
@@ -354,7 +397,6 @@ function processInterfaceDeclaration(node: ts.InterfaceDeclaration, writer: Code
         const deepInlineMembers = typeLiteral.members.filter(mem => ts.isPropertySignature(mem) && mem.type && ts.isTypeLiteralNode((mem as ts.PropertySignature).type)) as ts.PropertySignature[]
         if (deepInlineMembers.length > 0) {
           writer.newLine()
-          writer.write('@js.native').newLine()
           writer.write(`object ${traitName} `).block(() => {
             deepInlineMembers.forEach(nestedPropSig => {
               const nestedTraitName = capitalize(nestedPropSig.name.getText())
@@ -429,6 +471,10 @@ function processPropertySignature(node: ts.PropertySignature, writer: CodeBlockW
 }
 
 function processMethodDeclaration(node: ts.MethodDeclaration, writer: CodeBlockWriter, isAbstractClass?: boolean): void {
+  // Skip private or protected instance methods
+  if (node.modifiers?.some(m => m.kind === ts.SyntaxKind.PrivateKeyword || m.kind === ts.SyntaxKind.ProtectedKeyword)) {
+    return
+  }
   const name = node.name.getText()
   
   // Handle reserved words
@@ -577,7 +623,11 @@ function processVariableStatement(node: ts.VariableStatement, writer: CodeBlockW
       const currentIndentLevel = writer.getIndentationLevel()
       writer.setIndentationLevel(0)
       writer.write('@js.native').newLine()
-      writer.write('@JSGlobal').newLine()
+      if (namespace) {
+        writer.write(`@JSGlobal("${namespace}.${varName}")`).newLine()
+      } else {
+        writer.write('@JSGlobal').newLine()
+      }
       writer.write(`object ${varName} extends js.Object `).block(() => {
         (decl.type as ts.TypeLiteralNode).members.forEach((member: ts.TypeElement) => {
           if (ts.isPropertySignature(member)) {
@@ -777,10 +827,17 @@ function convertUnionType(node: ts.UnionTypeNode): string {
     }
   }
   
-  // Remove duplicates and join with |
+    // Remove duplicates and join with |
   const uniqueTypes = [...new Set(types)]
   
-
+  // Handle common nullable patterns: T | Null | Unit
+  if (uniqueTypes.includes('Null') && uniqueTypes.includes('Unit')) {
+    const otherTypes = uniqueTypes.filter(t => t !== 'Null' && t !== 'Unit')
+    if (otherTypes.length === 1) {
+      return `${otherTypes[0]} | Null | Unit`
+    }
+  }
+  
   
   // If we have multiple string literals plus other types, simplify string literals to String
   const hasStringLiterals = node.types.some(t => 
@@ -830,8 +887,8 @@ function hasExportModifier(node: ts.Node): boolean {
   return (node as any).modifiers?.some((mod: ts.Modifier) => mod.kind === ts.SyntaxKind.ExportKeyword) ?? false
 }
 
-function generateModuleObject(moduleName: string, exports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[], functions: ts.FunctionDeclaration[]}, writer: CodeBlockWriter): void {
-  if (exports.types.length === 0 && exports.functions.length === 0) return
+function generateModuleObject(moduleName: string, exports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[], functions: ts.FunctionDeclaration[], variables: ts.VariableDeclaration[]}, writer: CodeBlockWriter): void {
+  if (exports.types.length === 0 && exports.functions.length === 0 && exports.variables.length === 0) return
   
   writer.newLine()
   const currentIndentLevel = writer.getIndentationLevel()
@@ -845,6 +902,15 @@ function generateModuleObject(moduleName: string, exports: {interfaces: ts.Inter
       writer.writeLine(`type ${typeName} = ${typeValue}`)
     })
     
+    exports.variables.forEach(variable => {
+      const varName = variable.name.getText()
+      const varType = variable.type ? convertTypeToScala(variable.type) : 'js.Any'
+      let keyword = 'def'
+      const declList = variable.parent as ts.VariableDeclarationList
+      if (declList.flags & ts.NodeFlags.Const) keyword = 'val'
+      writer.writeLine(`${keyword} ${varName}: ${varType} = js.native`)
+    })
+
     exports.functions.forEach(func => {
       const functionName = func.name!.getText()
       
@@ -872,7 +938,7 @@ function generateModuleObject(moduleName: string, exports: {interfaces: ts.Inter
 }
 
 function generateGlobalScopeObject(packageName: string, exports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[], classes: ts.ClassDeclaration[], functions: ts.FunctionDeclaration[], exportAssignments: ts.ExportAssignment[], variables: ts.VariableDeclaration[]}, writer: CodeBlockWriter): void {
-  if (exports.types.length === 0 && exports.exportAssignments.length === 0 && exports.variables.length === 0) return
+  if (exports.types.length === 0 && exports.functions.length === 0 && exports.exportAssignments.length === 0 && exports.variables.length === 0) return
   
   writer.newLine()
   const currentIndentLevel = writer.getIndentationLevel()
@@ -880,6 +946,8 @@ function generateGlobalScopeObject(packageName: string, exports: {interfaces: ts
   writer.write('@js.native').newLine()
   writer.write('@JSGlobalScope').newLine()
   writer.write(`object ${capitalize(packageName)} extends js.Object `).block(() => {
+    const emitted = new Set<string>()
+    const emit = (line: string) => { if (!emitted.has(line)) { emitted.add(line); writer.writeLine(line) } }
     exports.types.forEach(typeAlias => {
       const typeName = getTypeAliasName(typeAlias)
       const typeValue = convertTypeAliasToScala(typeAlias)
@@ -903,7 +971,7 @@ function generateGlobalScopeObject(packageName: string, exports: {interfaces: ts
           }).join(', ')
           
           const returnType = exportedFunction.type ? convertTypeToScala(exportedFunction.type) : 'Unit'
-          writer.writeLine(`def ${functionName}(${params}): ${returnType} = js.native`)
+          emit(`def ${functionName}(${params}): ${returnType} = js.native`)
         }
       }
     })
@@ -916,6 +984,18 @@ function generateGlobalScopeObject(packageName: string, exports: {interfaces: ts
       const declList = variable.parent as ts.VariableDeclarationList
       if (declList.flags & ts.NodeFlags.Const) keyword = 'val'
       writer.writeLine(`${keyword} ${varName}: ${varType} = js.native`)
+    })
+
+    // Handle standalone function declarations
+    exports.functions.forEach(func => {
+      const functionName = func.name!.getText()
+      const params = func.parameters.map(p => {
+        const paramName = p.name.getText()
+        const paramType = p.type ? convertTypeToScala(p.type) : 'js.Any'
+        return `${paramName}: ${paramType}`
+      }).join(', ')
+      const returnType = func.type ? convertTypeToScala(func.type) : 'Unit'
+      emit(`def ${functionName}(${params}): ${returnType} = js.native`)
     })
   })
   writer.newLine()
@@ -950,12 +1030,18 @@ function processExportAssignment(node: ts.ExportAssignment, writer: CodeBlockWri
 }
 
 function processInterfaceMembersWithDeduplication(members: readonly ts.TypeElement[], writer: CodeBlockWriter): void {
-  // Simply forward to the regular member processing helpers.  The original
-  // implementation tried to build the signature string manually, but that led
-  // to missing information such as type parameters, reserved-word handling,
-  // optional/rest parameters, etc.  Re-using the existing helper methods
-  // guarantees consistency.
+  const seen = new Set<string>()
   members.forEach(member => {
-    processInterfaceMember(member, writer)
+    const tempWriter = new CodeBlockWriter({ indentNumberOfSpaces: 0, newLine: '\n' })
+    if (ts.isMethodSignature(member)) {
+      processMethodSignature(member, tempWriter)
+    } else {
+      processInterfaceMember(member, tempWriter)
+    }
+    const sig = tempWriter.toString().trim()
+    if (!seen.has(sig)) {
+      seen.add(sig)
+      writer.writeLine(sig)
+    }
   })
 }
