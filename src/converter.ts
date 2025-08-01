@@ -671,6 +671,10 @@ function convertTypeToScala(typeNode: ts.TypeNode): string {
       return 'Boolean'
     case ts.SyntaxKind.VoidKeyword:
       return 'Unit'
+    case ts.SyntaxKind.NullKeyword:
+      return 'Null'
+    case ts.SyntaxKind.UndefinedKeyword:
+      return 'Unit'
     case ts.SyntaxKind.AnyKeyword:
       return 'js.Any'
     case ts.SyntaxKind.ObjectKeyword:
@@ -714,6 +718,8 @@ function convertLiteralType(node: ts.LiteralTypeNode): string {
     case ts.SyntaxKind.NumericLiteral:
       const text = literal.getText()
       return text.includes('.') ? 'Double' : 'Int'
+    case ts.SyntaxKind.NullKeyword:
+      return 'Null'
     default:
       return 'js.Any'
   }
