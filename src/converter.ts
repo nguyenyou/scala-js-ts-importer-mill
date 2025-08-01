@@ -20,7 +20,7 @@ export function convertTsToScala(input: string, packageName: string): string {
   // Generate Scala output
   generateScalaOutput(sourceFile, writer, packageName)
 
-  return writer.toString()
+  return writer.toString().replace(/\r\n/g, '\n')
 }
 
 function generateScalaOutput(sourceFile: ts.SourceFile, writer: CodeBlockWriter, packageName: string): void {
@@ -39,12 +39,13 @@ function generateScalaOutput(sourceFile: ts.SourceFile, writer: CodeBlockWriter,
     
   writer.write(`${packageDeclaration} `).block(() => {
     // Collect top-level exports for global scope object
-    const topLevelExports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[], classes: ts.ClassDeclaration[], functions: ts.FunctionDeclaration[], exportAssignments: ts.ExportAssignment[]} = {
+    const topLevelExports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[], classes: ts.ClassDeclaration[], functions: ts.FunctionDeclaration[], exportAssignments: ts.ExportAssignment[], variables: ts.VariableDeclaration[]} = {
       interfaces: [],
       types: [],
       classes: [],
       functions: [],
-      exportAssignments: []
+      exportAssignments: [],
+      variables: []
     }
     
     // Process top-level declarations and collect exports
@@ -59,18 +60,25 @@ function generateScalaOutput(sourceFile: ts.SourceFile, writer: CodeBlockWriter,
         }
       }
       
-      // Collect functions and export assignments
+      // Collect functions, export assignments, and variable declarations
       if (ts.isFunctionDeclaration(statement)) {
         topLevelExports.functions.push(statement)
       } else if (ts.isExportAssignment(statement)) {
         topLevelExports.exportAssignments.push(statement)
+      } else if (ts.isVariableStatement(statement)) {
+        // Collect variable declarations that should go in global scope
+        statement.declarationList.declarations.forEach(decl => {
+          if (decl.type && !ts.isTypeLiteralNode(decl.type)) {
+            topLevelExports.variables.push(decl)
+          }
+        })
       }
       
       processStatement(statement, writer, '')
     })
     
-    // Generate global scope object if there are top-level exports or export assignments
-    if (topLevelExports.types.length > 0 || topLevelExports.exportAssignments.length > 0) {
+    // Generate global scope object if there are top-level exports, export assignments, or variables
+    if (topLevelExports.types.length > 0 || topLevelExports.exportAssignments.length > 0 || topLevelExports.variables.length > 0) {
       generateGlobalScopeObject(packageName, topLevelExports, writer)
     }
     
@@ -114,6 +122,9 @@ function processStatement(statement: ts.Statement, writer: CodeBlockWriter, name
       break
     case ts.SyntaxKind.ExportAssignment:
       processExportAssignment(statement as ts.ExportAssignment, writer, namespace)
+      break
+    case ts.SyntaxKind.ImportDeclaration:
+      // Skip import declarations - they're just references
       break
     default:
       // Skip unhandled statement types
@@ -568,20 +579,41 @@ function convertTypeReference(node: ts.TypeReferenceNode): string {
     return `js.Array[${typeArgs.join(', ')}]`
   }
   
-  // Map common TypeScript types to Scala.js equivalents
-  switch (typeName) {
-    case 'Number':
-      return 'Double'
-    case 'null':
-      return 'Null'
-    case 'undefined':
-      return 'Unit'
-    default:
-      if (typeArgs.length > 0) {
-        return `${typeName}[${typeArgs.join(', ')}]`
-      }
-      return typeName
+  if (typeName === 'ReadonlyArray' && typeArgs.length > 0) {
+    return `js.Array[_ <: ${typeArgs.join(', ')}]`
   }
+  
+  // Map common TypeScript types to Scala.js equivalents
+  const typeMapping: Record<string, string> = {
+    'null': 'Null',
+    'undefined': 'Unit',
+    'Float32Array': 'js.typedarray.Float32Array',
+    'Float64Array': 'js.typedarray.Float64Array',
+    'Uint8Array': 'js.typedarray.Uint8Array',
+    'Uint16Array': 'js.typedarray.Uint16Array',
+    'Uint32Array': 'js.typedarray.Uint32Array',
+    'Int8Array': 'js.typedarray.Int8Array',
+    'Int16Array': 'js.typedarray.Int16Array',
+    'Int32Array': 'js.typedarray.Int32Array',
+    'Uint8ClampedArray': 'js.typedarray.Uint8ClampedArray',
+    'ArrayBuffer': 'js.typedarray.ArrayBuffer',
+    'ArrayBufferView': 'js.typedarray.ArrayBufferView',
+    'DataView': 'js.typedarray.DataView',
+    'ReadonlyArray': 'js.Array',
+    'PromiseLike': 'js.Thenable'
+  }
+  
+  if (typeMapping[typeName]) {
+    if (typeArgs.length > 0) {
+      return `${typeMapping[typeName]}[${typeArgs.join(', ')}]`
+    }
+    return typeMapping[typeName]
+  }
+  
+  if (typeArgs.length > 0) {
+    return `${typeName}[${typeArgs.join(', ')}]`
+  }
+  return typeName
 }
 
 function convertFunctionType(node: ts.FunctionTypeNode): string {
@@ -681,7 +713,18 @@ function convertUnionType(node: ts.UnionTypeNode): string {
 
 function convertIntersectionType(node: ts.IntersectionTypeNode): string {
   const types = node.types.map(t => convertTypeToScala(t))
-  return types.join(' with ')
+  
+  // Remove duplicates but preserve order
+  const uniqueTypes = []
+  const seen = new Set()
+  for (const type of types) {
+    if (!seen.has(type)) {
+      seen.add(type)
+      uniqueTypes.push(type)
+    }
+  }
+  
+  return uniqueTypes.join(' with ')
 }
 
 function convertTypeOperator(node: ts.TypeOperatorNode): string {
@@ -737,8 +780,8 @@ function generateModuleObject(moduleName: string, exports: {interfaces: ts.Inter
   writer.setIndentationLevel(currentIndentLevel)
 }
 
-function generateGlobalScopeObject(packageName: string, exports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[], classes: ts.ClassDeclaration[], functions: ts.FunctionDeclaration[], exportAssignments: ts.ExportAssignment[]}, writer: CodeBlockWriter): void {
-  if (exports.types.length === 0 && exports.exportAssignments.length === 0) return
+function generateGlobalScopeObject(packageName: string, exports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[], classes: ts.ClassDeclaration[], functions: ts.FunctionDeclaration[], exportAssignments: ts.ExportAssignment[], variables: ts.VariableDeclaration[]}, writer: CodeBlockWriter): void {
+  if (exports.types.length === 0 && exports.exportAssignments.length === 0 && exports.variables.length === 0) return
   
   writer.newLine()
   const currentIndentLevel = writer.getIndentationLevel()
@@ -772,6 +815,13 @@ function generateGlobalScopeObject(packageName: string, exports: {interfaces: ts
           writer.writeLine(`def ${functionName}(${params}): ${returnType} = js.native`)
         }
       }
+    })
+    
+    // Handle variable declarations
+    exports.variables.forEach(variable => {
+      const varName = variable.name.getText()
+      const varType = variable.type ? convertTypeToScala(variable.type) : 'js.Any'
+      writer.writeLine(`val ${varName}: ${varType} = js.native`)
     })
   })
   writer.newLine()
