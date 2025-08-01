@@ -20,7 +20,7 @@ export function convertTsToScala(input: string, packageName: string): string {
   // Generate Scala output
   generateScalaOutput(sourceFile, writer, packageName)
 
-  return writer.toString().replace(/\r\n/g, '\n')
+  return writer.toString()
 }
 
 function generateScalaOutput(sourceFile: ts.SourceFile, writer: CodeBlockWriter, packageName: string): void {
@@ -198,36 +198,22 @@ function processClassDeclaration(node: ts.ClassDeclaration, writer: CodeBlockWri
   
   const typeParamString = typeParams.length > 0 ? `[${typeParams.join(', ')}]` : ''
   
-  // For exported classes in modules
-  if (isExport) {
-    writer.newLine()
-    const currentIndentLevel = writer.getIndentationLevel()
-    writer.setIndentationLevel(0)
-    writer.write('@js.native').newLine()
-    
-    if (namespace) {
-      writer.write(`@JSGlobal("${namespace}.${className}")`).newLine()
-    } else {
-      writer.write('@JSGlobal').newLine()
-    }
-    
-    writer.write(`${isAbstract ? 'abstract ' : ''}class ${safeClassName}${typeParamString} extends js.Object `).block(() => {
-      node.members.forEach(member => {
-        processClassMember(member, writer, isAbstract)
-      })
-    })
-    writer.newLine()
-    writer.setIndentationLevel(currentIndentLevel)
-    return
-  }
-  
-  // Write annotations at base indentation level
   writer.newLine()
   const currentIndentLevel = writer.getIndentationLevel()
   writer.setIndentationLevel(0)
   writer.write('@js.native').newLine()
-  // Only add @JSGlobal for top-level non-exported classes when they have specific behavior
-  // For now, don't add @JSGlobal for top-level classes
+  
+  // @JSGlobal logic:
+  // - Exported classes in modules: @JSGlobal("namespace.ClassName")
+  // - Non-exported classes in modules: no @JSGlobal
+  // - Top-level classes: @JSGlobal (no parameter)
+  if (isExport && namespace) {
+    writer.write(`@JSGlobal("${namespace}.${className}")`).newLine()
+  } else if (!namespace) {
+    writer.write('@JSGlobal').newLine()
+  }
+  // Non-exported classes in modules get no @JSGlobal
+  
   writer.write(`${isAbstract ? 'abstract ' : ''}class ${safeClassName}${typeParamString} extends js.Object `).block(() => {
     node.members.forEach(member => {
       processClassMember(member, writer, isAbstract)
@@ -446,9 +432,14 @@ function processEnumDeclaration(node: ts.EnumDeclaration, writer: CodeBlockWrite
 }
 
 function processTypeAliasDeclaration(node: ts.TypeAliasDeclaration, writer: CodeBlockWriter, namespace: string): void {
-  // Type aliases are handled in module/global scope objects for exports
+  // Type aliases in namespaces are handled in module objects, regardless of export status
+  if (namespace) {
+    return // Skip processing here, will be handled in module object
+  }
+  
+  // Only process type aliases that are at the top level and not exported
   if (hasExportModifier(node)) {
-    return // Skip processing here, will be handled in module/global scope object
+    return // Skip processing here, will be handled in global scope object
   }
   
   const typeName = node.name.getText()
