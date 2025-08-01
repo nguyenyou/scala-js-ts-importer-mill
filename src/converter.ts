@@ -1,6 +1,9 @@
 import * as ts from 'typescript'
 import CodeBlockWriter from 'code-block-writer'
 
+// Shared Scala reserved words list
+const SCALA_RESERVED_WORDS = ['abstract', 'case', 'catch', 'class', 'def', 'do', 'else', 'extends', 'false', 'final', 'finally', 'for', 'forSome', 'if', 'implicit', 'import', 'lazy', 'macro', 'match', 'new', 'null', 'object', 'override', 'package', 'private', 'protected', 'return', 'sealed', 'super', 'then', 'this', 'throw', 'trait', 'try', 'true', 'type', 'val', 'var', 'while', 'with', 'yield']
+
 export function convertTsToScala(input: string, packageName: string): string {
   // Parse TypeScript input
   const sourceFile = ts.createSourceFile(
@@ -32,8 +35,8 @@ function generateScalaOutput(sourceFile: ts.SourceFile, writer: CodeBlockWriter,
   writer.writeLine('')
 
   // Write package declaration
-  const reservedWords = ['abstract', 'case', 'catch', 'class', 'def', 'do', 'else', 'extends', 'false', 'final', 'finally', 'for', 'forSome', 'if', 'implicit', 'import', 'lazy', 'macro', 'match', 'new', 'null', 'object', 'override', 'package', 'private', 'protected', 'return', 'sealed', 'super', 'then', 'this', 'throw', 'trait', 'try', 'true', 'type', 'val', 'var', 'while', 'with', 'yield']
-  const packageDeclaration = packageName.includes('-') || !packageName.match(/^[a-zA-Z_][a-zA-Z0-9_]*$/) || reservedWords.includes(packageName)
+  // Use shared SCALA_RESERVED_WORDS constant
+  const packageDeclaration = packageName.includes('-') || !packageName.match(/^[a-zA-Z_][a-zA-Z0-9_]*$/) || SCALA_RESERVED_WORDS.includes(packageName)
     ? `package \`${packageName}\`` 
     : `package ${packageName}`
     
@@ -138,8 +141,8 @@ function processModuleDeclaration(node: ts.ModuleDeclaration, writer: CodeBlockW
   const newNamespace = namespace ? `${namespace}.${moduleName}` : moduleName
   
   // Handle reserved words for module names
-  const reservedWords = ['abstract', 'case', 'catch', 'class', 'def', 'do', 'else', 'extends', 'false', 'final', 'finally', 'for', 'forSome', 'if', 'implicit', 'import', 'lazy', 'macro', 'match', 'new', 'null', 'object', 'override', 'package', 'private', 'protected', 'return', 'sealed', 'super', 'then', 'this', 'throw', 'trait', 'try', 'true', 'type', 'val', 'var', 'while', 'with', 'yield']
-  const safeModuleName = reservedWords.includes(moduleName) ? `\`${moduleName}\`` : moduleName
+  // Use shared SCALA_RESERVED_WORDS constant
+  const safeModuleName = SCALA_RESERVED_WORDS.includes(moduleName) ? `\`${moduleName}\`` : moduleName
   
   writer.newLine()
   const currentIndentLevel = writer.getIndentationLevel()
@@ -187,8 +190,8 @@ function processClassDeclaration(node: ts.ClassDeclaration, writer: CodeBlockWri
   const isExport = hasExportModifier(node)
   
   // Handle reserved words for class names
-  const reservedWords = ['abstract', 'case', 'catch', 'class', 'def', 'do', 'else', 'extends', 'false', 'final', 'finally', 'for', 'forSome', 'if', 'implicit', 'import', 'lazy', 'macro', 'match', 'new', 'null', 'object', 'override', 'package', 'private', 'protected', 'return', 'sealed', 'super', 'then', 'this', 'throw', 'trait', 'try', 'true', 'type', 'val', 'var', 'while', 'with', 'yield']
-  const safeClassName = reservedWords.includes(className) ? `\`${className}\`` : className
+  // Use shared SCALA_RESERVED_WORDS constant
+  const safeClassName = SCALA_RESERVED_WORDS.includes(className) ? `\`${className}\`` : className
   
   // Handle type parameters
   const typeParams = node.typeParameters?.map(tp => {
@@ -306,8 +309,8 @@ function processMethodDeclaration(node: ts.MethodDeclaration, writer: CodeBlockW
   const name = node.name.getText()
   
   // Handle reserved words
-  const reservedWords = ['abstract', 'case', 'catch', 'class', 'def', 'do', 'else', 'extends', 'false', 'final', 'finally', 'for', 'forSome', 'if', 'implicit', 'import', 'lazy', 'macro', 'match', 'new', 'null', 'object', 'override', 'package', 'private', 'protected', 'return', 'sealed', 'super', 'then', 'this', 'throw', 'trait', 'try', 'true', 'type', 'val', 'var', 'while', 'with', 'yield']
-  const safeName = reservedWords.includes(name) ? `\`${name}\`` : name
+  // Use shared SCALA_RESERVED_WORDS constant
+  const safeName = SCALA_RESERVED_WORDS.includes(name) ? `\`${name}\`` : name
   
   // Handle method type parameters
   const typeParams = node.typeParameters?.map(tp => {
@@ -344,8 +347,8 @@ function processMethodSignature(node: ts.MethodSignature, writer: CodeBlockWrite
   const name = node.name.getText()
   
   // Handle reserved words
-  const reservedWords = ['abstract', 'case', 'catch', 'class', 'def', 'do', 'else', 'extends', 'false', 'final', 'finally', 'for', 'forSome', 'if', 'implicit', 'import', 'lazy', 'macro', 'match', 'new', 'null', 'object', 'override', 'package', 'private', 'protected', 'return', 'sealed', 'super', 'then', 'this', 'throw', 'trait', 'try', 'true', 'type', 'val', 'var', 'while', 'with', 'yield']
-  const safeName = reservedWords.includes(name) ? `\`${name}\`` : name
+  // Use shared SCALA_RESERVED_WORDS constant
+  const safeName = SCALA_RESERVED_WORDS.includes(name) ? `\`${name}\`` : name
   
   // Handle method type parameters
   const typeParams = node.typeParameters?.map(tp => {
@@ -361,7 +364,7 @@ function processMethodSignature(node: ts.MethodSignature, writer: CodeBlockWrite
     let paramType = p.type ? convertTypeToScala(p.type) : 'js.Any'
     
     // Handle reserved words for parameter names
-    const safeParamName = reservedWords.includes(paramName) ? `\`${paramName}\`` : paramName
+    const safeParamName = SCALA_RESERVED_WORDS.includes(paramName) ? `\`${paramName}\`` : paramName
     
     // Handle rest parameters
     if (p.dotDotDotToken) {
@@ -451,7 +454,7 @@ function processVariableStatement(node: ts.VariableStatement, writer: CodeBlockW
       writer.write('@js.native').newLine()
       writer.write('@JSGlobal').newLine()
       writer.write(`object ${varName} extends js.Object `).block(() => {
-        decl.type!.members.forEach(member => {
+        (decl.type as ts.TypeLiteralNode).members.forEach((member: ts.TypeElement) => {
           if (ts.isPropertySignature(member)) {
             const memberName = member.name?.getText() || 'unknown'
             const memberType = member.type ? convertTypeToScala(member.type) : 'js.Any'
@@ -707,7 +710,7 @@ function convertTypeOperator(node: ts.TypeOperatorNode): string {
 }
 
 function hasExportModifier(node: ts.Node): boolean {
-  return node.modifiers?.some(mod => mod.kind === ts.SyntaxKind.ExportKeyword) ?? false
+  return (node as any).modifiers?.some((mod: ts.Modifier) => mod.kind === ts.SyntaxKind.ExportKeyword) ?? false
 }
 
 function generateModuleObject(moduleName: string, exports: {interfaces: ts.InterfaceDeclaration[], types: ts.TypeAliasDeclaration[], functions: ts.FunctionDeclaration[]}, writer: CodeBlockWriter): void {
