@@ -53,14 +53,12 @@ function generateScalaOutput(sourceFile: ts.SourceFile, writer: CodeBlockWriter,
       if (hasExportModifier(statement)) {
         if (ts.isInterfaceDeclaration(statement)) {
           topLevelExports.interfaces.push(statement)
-        } else if (ts.isTypeAliasDeclaration(statement)) {
-          topLevelExports.types.push(statement)
         } else if (ts.isClassDeclaration(statement)) {
           topLevelExports.classes.push(statement)
         }
       }
       
-      // Collect functions, export assignments, and variable declarations
+      // Collect functions, export assignments, variable declarations, and ALL type aliases
       if (ts.isFunctionDeclaration(statement)) {
         topLevelExports.functions.push(statement)
       } else if (ts.isExportAssignment(statement)) {
@@ -72,6 +70,9 @@ function generateScalaOutput(sourceFile: ts.SourceFile, writer: CodeBlockWriter,
             topLevelExports.variables.push(decl)
           }
         })
+      } else if (ts.isTypeAliasDeclaration(statement)) {
+        // Collect ALL type aliases for global scope object (both exported and non-exported)
+        topLevelExports.types.push(statement)
       }
       
       processStatement(statement, writer, '')
@@ -204,15 +205,13 @@ function processClassDeclaration(node: ts.ClassDeclaration, writer: CodeBlockWri
   writer.write('@js.native').newLine()
   
   // @JSGlobal logic:
-  // - Exported classes in modules: @JSGlobal("namespace.ClassName")
-  // - Non-exported classes in modules: no @JSGlobal
+  // - All classes in namespaces: @JSGlobal("namespace.ClassName") 
   // - Top-level classes: @JSGlobal (no parameter)
-  if (isExport && namespace) {
+  if (namespace) {
     writer.write(`@JSGlobal("${namespace}.${className}")`).newLine()
-  } else if (!namespace) {
+  } else {
     writer.write('@JSGlobal').newLine()
   }
-  // Non-exported classes in modules get no @JSGlobal
   
   writer.write(`${isAbstract ? 'abstract ' : ''}class ${safeClassName}${typeParamString} extends js.Object `).block(() => {
     node.members.forEach(member => {
@@ -432,33 +431,9 @@ function processEnumDeclaration(node: ts.EnumDeclaration, writer: CodeBlockWrite
 }
 
 function processTypeAliasDeclaration(node: ts.TypeAliasDeclaration, writer: CodeBlockWriter, namespace: string): void {
-  // Type aliases in namespaces are handled in module objects, regardless of export status
-  if (namespace) {
-    return // Skip processing here, will be handled in module object
-  }
-  
-  // Only process type aliases that are at the top level and not exported
-  if (hasExportModifier(node)) {
-    return // Skip processing here, will be handled in global scope object
-  }
-  
-  const typeName = node.name.getText()
-  const typeValue = convertTypeToScala(node.type)
-  
-  // Handle type parameters
-  const typeParams = node.typeParameters?.map(tp => {
-    const paramName = tp.name.getText()
-    const constraint = tp.constraint ? ` <: ${convertTypeToScala(tp.constraint)}` : ''
-    return `${paramName}${constraint}`
-  }) || []
-  
-  const typeParamString = typeParams.length > 0 ? `[${typeParams.join(', ')}]` : ''
-  
-  writer.newLine()
-  const currentIndentLevel = writer.getIndentationLevel()
-  writer.setIndentationLevel(0)
-  writer.write(`type ${typeName}${typeParamString} = ${typeValue}`).newLine()
-  writer.setIndentationLevel(currentIndentLevel)
+  // All type aliases are deferred to either module objects (for namespaces) 
+  // or global scope objects (for top level). Don't process them immediately.
+  return
 }
 
 function processVariableStatement(node: ts.VariableStatement, writer: CodeBlockWriter, namespace: string): void {
