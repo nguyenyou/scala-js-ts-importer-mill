@@ -492,6 +492,8 @@ function convertTypeToScala(typeNode: ts.TypeNode): string {
       return 'Unit'
     case ts.SyntaxKind.AnyKeyword:
       return 'js.Any'
+    case ts.SyntaxKind.ObjectKeyword:
+      return 'js.Object'
     case ts.SyntaxKind.NeverKeyword:
       return 'Nothing'
     case ts.SyntaxKind.ThisKeyword:
